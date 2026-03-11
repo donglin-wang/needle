@@ -3,81 +3,147 @@
 #include "../src/matcher.hpp"
 #include "../src/naive_matcher.hpp"
 #include "../src/suffix_array_indexer.hpp"
+#include "corpus_generator.hpp"
 
-#include <random>
 #include <string>
 
 static const std::string CORPUS_PATH = "/tmp/needle_bench_corpus.bin";
 static const std::string INDEX_PATH  = "/tmp/needle_bench_index.bin";
-
-static std::string random_corpus(size_t n, uint64_t seed = 42)
-{
-    std::mt19937 rng(seed);
-    std::uniform_int_distribution<> dist('a', 'z');
-    std::string s(n, ' ');
-    for (char &c : s)
-        c = static_cast<char>(dist(rng));
-    return s;
-}
 
 static std::vector<uint32_t> codepoints(const std::string &s)
 {
     return {s.begin(), s.end()};
 }
 
-// Measures suffix array construction throughput at varying corpus sizes.
+// Extracts an 8-char pattern from the middle of the corpus.
+static std::vector<uint32_t> mid_pattern(const std::string &text, size_t n)
+{
+    return codepoints(text.substr(n / 2, 8));
+}
+
+// Helper: build and save corpus + index, return pattern.
+static std::vector<uint32_t> setup_index(const std::string &text, size_t n)
+{
+    auto text_codepoints = codepoints(text);
+    save_corpus(text_codepoints, CORPUS_PATH);
+    SuffixArrayIndexer indexer(std::move(text_codepoints));
+    indexer.save_index(INDEX_PATH);
+    return mid_pattern(text, n);
+}
+
+// Helper: save corpus only, return pattern.
+static std::vector<uint32_t> setup_corpus(const std::string &text, size_t n)
+{
+    save_corpus(codepoints(text), CORPUS_PATH);
+    return mid_pattern(text, n);
+}
+
+// --- Index build ---
+
 static void BM_IndexBuild(benchmark::State &state)
 {
     std::string text = random_corpus(state.range(0));
     for (auto _ : state)
     {
-        SuffixArrayIndexer idx(codepoints(text));
-        benchmark::DoNotOptimize(idx.get_sa().data());
+        SuffixArrayIndexer indexer(codepoints(text));
+        benchmark::DoNotOptimize(indexer.get_sa().data());
     }
     state.SetBytesProcessed(state.iterations() * state.range(0));
 }
 BENCHMARK(BM_IndexBuild)->Range(1 << 10, 1 << 20)->Unit(benchmark::kMillisecond);
 
-// Measures binary search throughput against a pre-built index.
-// Setup (index build + mmap) is outside the timed loop.
-static void BM_Search(benchmark::State &state)
+// --- SA search: random, repetitive, natural ---
+
+static void BM_SASearch_Random(benchmark::State &state)
 {
-    std::string text = random_corpus(state.range(0));
-    auto text_codepoints = codepoints(text);
-    save_corpus(text_codepoints, CORPUS_PATH);
-    SuffixArrayIndexer idx(std::move(text_codepoints));
-    idx.save_index(INDEX_PATH);
-
-    // 8-char pattern taken from the middle of the corpus
-    auto pattern = codepoints(text.substr(state.range(0) / 2, 8));
-
+    const size_t n = state.range(0);
+    std::string text = random_corpus(n);
+    auto pattern = setup_index(text, n);
     Matcher matcher(CORPUS_PATH, INDEX_PATH);
     for (auto _ : state)
     {
         auto results = matcher.search(pattern);
         benchmark::DoNotOptimize(results.data());
     }
-    state.SetBytesProcessed(state.iterations() * state.range(0));
+    state.SetBytesProcessed(state.iterations() * n);
 }
-BENCHMARK(BM_Search)->Range(1 << 10, 1 << 20)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_SASearch_Random)->Range(1 << 10, 1 << 24)->Unit(benchmark::kMicrosecond);
 
-// Measures naive linear scan throughput over the same mmap'd corpus.
-static void BM_NaiveSearch(benchmark::State &state)
+static void BM_SASearch_Repetitive(benchmark::State &state)
 {
-    std::string text = random_corpus(state.range(0));
-    auto text_codepoints = codepoints(text);
-    save_corpus(text_codepoints, CORPUS_PATH);
+    const size_t n = state.range(0);
+    std::string text = repetitive_corpus(n);
+    auto pattern = setup_index(text, n);
+    Matcher matcher(CORPUS_PATH, INDEX_PATH);
+    for (auto _ : state)
+    {
+        auto results = matcher.search(pattern);
+        benchmark::DoNotOptimize(results.data());
+    }
+    state.SetBytesProcessed(state.iterations() * n);
+}
+BENCHMARK(BM_SASearch_Repetitive)->Range(1 << 10, 1 << 24)->Unit(benchmark::kMicrosecond);
 
-    auto pattern = codepoints(text.substr(state.range(0) / 2, 8));
+static void BM_SASearch_Natural(benchmark::State &state)
+{
+    const size_t n = state.range(0);
+    std::string text = natural_corpus(n);
+    auto pattern = setup_index(text, n);
+    Matcher matcher(CORPUS_PATH, INDEX_PATH);
+    for (auto _ : state)
+    {
+        auto results = matcher.search(pattern);
+        benchmark::DoNotOptimize(results.data());
+    }
+    state.SetBytesProcessed(state.iterations() * n);
+}
+BENCHMARK(BM_SASearch_Natural)->Range(1 << 10, 1 << 24)->Unit(benchmark::kMicrosecond);
 
+// --- Naive search: random, repetitive, natural ---
+
+static void BM_NaiveSearch_Random(benchmark::State &state)
+{
+    const size_t n = state.range(0);
+    std::string text = random_corpus(n);
+    auto pattern = setup_corpus(text, n);
     NaiveMatcher matcher(CORPUS_PATH);
     for (auto _ : state)
     {
         auto results = matcher.search(pattern);
         benchmark::DoNotOptimize(results.data());
     }
-    state.SetBytesProcessed(state.iterations() * state.range(0));
+    state.SetBytesProcessed(state.iterations() * n);
 }
-BENCHMARK(BM_NaiveSearch)->Range(1 << 10, 1 << 20)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_NaiveSearch_Random)->Range(1 << 10, 1 << 24)->Unit(benchmark::kMicrosecond);
+
+static void BM_NaiveSearch_Repetitive(benchmark::State &state)
+{
+    const size_t n = state.range(0);
+    std::string text = repetitive_corpus(n);
+    auto pattern = setup_corpus(text, n);
+    NaiveMatcher matcher(CORPUS_PATH);
+    for (auto _ : state)
+    {
+        auto results = matcher.search(pattern);
+        benchmark::DoNotOptimize(results.data());
+    }
+    state.SetBytesProcessed(state.iterations() * n);
+}
+BENCHMARK(BM_NaiveSearch_Repetitive)->Range(1 << 10, 1 << 24)->Unit(benchmark::kMicrosecond);
+
+static void BM_NaiveSearch_Natural(benchmark::State &state)
+{
+    const size_t n = state.range(0);
+    std::string text = natural_corpus(n);
+    auto pattern = setup_corpus(text, n);
+    NaiveMatcher matcher(CORPUS_PATH);
+    for (auto _ : state)
+    {
+        auto results = matcher.search(pattern);
+        benchmark::DoNotOptimize(results.data());
+    }
+    state.SetBytesProcessed(state.iterations() * n);
+}
+BENCHMARK(BM_NaiveSearch_Natural)->Range(1 << 10, 1 << 24)->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_MAIN();
