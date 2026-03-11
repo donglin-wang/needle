@@ -1,6 +1,7 @@
 #include <benchmark/benchmark.h>
 
 #include "../src/matcher.hpp"
+#include "../src/naive_matcher.hpp"
 #include "../src/suffix_array_indexer.hpp"
 
 #include <random>
@@ -59,5 +60,24 @@ static void BM_Search(benchmark::State &state)
     state.SetBytesProcessed(state.iterations() * state.range(0));
 }
 BENCHMARK(BM_Search)->Range(1 << 10, 1 << 20)->Unit(benchmark::kMicrosecond);
+
+// Measures naive linear scan throughput over the same mmap'd corpus.
+static void BM_NaiveSearch(benchmark::State &state)
+{
+    std::string text = random_corpus(state.range(0));
+    auto text_codepoints = codepoints(text);
+    save_corpus(text_codepoints, CORPUS_PATH);
+
+    auto pattern = codepoints(text.substr(state.range(0) / 2, 8));
+
+    NaiveMatcher matcher(CORPUS_PATH);
+    for (auto _ : state)
+    {
+        auto results = matcher.search(pattern);
+        benchmark::DoNotOptimize(results.data());
+    }
+    state.SetBytesProcessed(state.iterations() * state.range(0));
+}
+BENCHMARK(BM_NaiveSearch)->Range(1 << 10, 1 << 20)->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_MAIN();
