@@ -14,7 +14,7 @@ class Matcher
 {
     MappedFile corpus_file;
     MappedFile index_file;
-    const uint32_t *text;
+    const int32_t *text;
     const int32_t *suffix_array;
     int32_t n;
 
@@ -28,7 +28,7 @@ public:
         const char *cp = corpus_file.data();
         uint64_t corpus_n;
         std::memcpy(&corpus_n, cp, sizeof(corpus_n));
-        text = reinterpret_cast<const uint32_t *>(cp + sizeof(uint64_t));
+        text = reinterpret_cast<const int32_t *>(cp + sizeof(uint64_t));
 
         // Index layout: [uint64_t n][int32_t * n]
         const char *ip = index_file.data();
@@ -42,7 +42,7 @@ public:
     }
 
     // Returns sorted starting positions of all occurrences of pattern.
-    std::vector<int32_t> search(const std::vector<uint32_t> &pattern) const
+    std::vector<int32_t> search(const std::vector<int32_t> &pattern) const
     {
         if (pattern.empty())
             return {};

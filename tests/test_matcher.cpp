@@ -3,7 +3,7 @@
 #include "../src/matcher.hpp"
 #include "../src/suffix_array_indexer.hpp"
 
-static std::vector<uint32_t> codepoints(const std::string &s)
+static std::vector<int32_t> codepoints(const std::string &s)
 {
     return {s.begin(), s.end()};
 }

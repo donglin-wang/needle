@@ -7,7 +7,7 @@
 
 class UTF8Reader
 {
-    std::vector<uint32_t> data;
+    std::vector<int32_t> data;
     const std::string path;
     size_t buffer_size = 1000;
 
@@ -32,8 +32,8 @@ public:
         }
     }
 
-    const std::vector<uint32_t> &get_data() const { return data; }
-    std::vector<uint32_t> &get_data() { return data; }
+    const std::vector<int32_t> &get_data() const { return data; }
+    std::vector<int32_t> &get_data() { return data; }
 
     size_t parse_buffer(const std::vector<uint8_t> &buffer, size_t total)
     {

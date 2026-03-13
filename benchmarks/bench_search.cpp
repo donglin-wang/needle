@@ -30,19 +30,19 @@ static void report_page_faults(benchmark::State &state,
 static const std::string CORPUS_PATH = "/tmp/needle_bench_corpus.bin";
 static const std::string INDEX_PATH  = "/tmp/needle_bench_index.bin";
 
-static std::vector<uint32_t> codepoints(const std::string &s)
+static std::vector<int32_t> codepoints(const std::string &s)
 {
     return {s.begin(), s.end()};
 }
 
 // Extracts an 8-char pattern from the middle of the corpus.
-static std::vector<uint32_t> mid_pattern(const std::string &text, size_t n)
+static std::vector<int32_t> mid_pattern(const std::string &text, size_t n)
 {
     return codepoints(text.substr(n / 2, 8));
 }
 
 // Helper: build and save corpus + index, return pattern.
-static std::vector<uint32_t> setup_index(const std::string &text, size_t n)
+static std::vector<int32_t> setup_index(const std::string &text, size_t n)
 {
     auto text_codepoints = codepoints(text);
     save_corpus(text_codepoints, CORPUS_PATH);
@@ -52,7 +52,7 @@ static std::vector<uint32_t> setup_index(const std::string &text, size_t n)
 }
 
 // Helper: save corpus only, return pattern.
-static std::vector<uint32_t> setup_corpus(const std::string &text, size_t n)
+static std::vector<int32_t> setup_corpus(const std::string &text, size_t n)
 {
     save_corpus(codepoints(text), CORPUS_PATH);
     return mid_pattern(text, n);
