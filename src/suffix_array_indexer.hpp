@@ -53,6 +53,8 @@ private:
 
         const size_t n = text.size();
 
+        // Safe: Unicode caps at U+10FFFF (spec hard limit), fits in int32_t.
+        // int32_t required by libsais_int API.
         std::vector<int32_t> t(n);
         for (size_t i = 0; i < n; i++)
             t[i] = static_cast<int32_t>(text[i]);
