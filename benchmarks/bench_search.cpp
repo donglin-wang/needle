@@ -6,6 +6,26 @@
 #include "corpus_generator.hpp"
 
 #include <string>
+#include <sys/resource.h>
+
+static struct rusage snapshot_rusage()
+{
+    struct rusage usage;
+    getrusage(RUSAGE_SELF, &usage);
+    return usage;
+}
+
+static void report_page_faults(benchmark::State &state,
+                               const struct rusage &before,
+                               const struct rusage &after)
+{
+    state.counters["minor_faults"] = benchmark::Counter(
+        static_cast<double>(after.ru_minflt - before.ru_minflt),
+        benchmark::Counter::kAvgIterations);
+    state.counters["major_faults"] = benchmark::Counter(
+        static_cast<double>(after.ru_majflt - before.ru_majflt),
+        benchmark::Counter::kAvgIterations);
+}
 
 static const std::string CORPUS_PATH = "/tmp/needle_bench_corpus.bin";
 static const std::string INDEX_PATH  = "/tmp/needle_bench_index.bin";
@@ -43,11 +63,14 @@ static std::vector<uint32_t> setup_corpus(const std::string &text, size_t n)
 static void BM_IndexBuild(benchmark::State &state)
 {
     std::string text = random_corpus(state.range(0));
+    auto before = snapshot_rusage();
     for (auto _ : state)
     {
         SuffixArrayIndexer indexer(codepoints(text));
         benchmark::DoNotOptimize(indexer.get_sa().data());
     }
+    auto after = snapshot_rusage();
+    report_page_faults(state, before, after);
     state.SetBytesProcessed(state.iterations() * state.range(0));
 }
 BENCHMARK(BM_IndexBuild)->Range(1 << 10, 1 << 20)->Unit(benchmark::kMillisecond);
@@ -60,11 +83,14 @@ static void BM_SASearch_Random(benchmark::State &state)
     std::string text = random_corpus(n);
     auto pattern = setup_index(text, n);
     Matcher matcher(CORPUS_PATH, INDEX_PATH);
+    auto before = snapshot_rusage();
     for (auto _ : state)
     {
         auto results = matcher.search(pattern);
         benchmark::DoNotOptimize(results.data());
     }
+    auto after = snapshot_rusage();
+    report_page_faults(state, before, after);
     state.SetBytesProcessed(state.iterations() * n);
 }
 BENCHMARK(BM_SASearch_Random)->Range(1 << 10, 1 << 24)->Unit(benchmark::kMicrosecond);
@@ -75,11 +101,14 @@ static void BM_SASearch_Repetitive(benchmark::State &state)
     std::string text = repetitive_corpus(n);
     auto pattern = setup_index(text, n);
     Matcher matcher(CORPUS_PATH, INDEX_PATH);
+    auto before = snapshot_rusage();
     for (auto _ : state)
     {
         auto results = matcher.search(pattern);
         benchmark::DoNotOptimize(results.data());
     }
+    auto after = snapshot_rusage();
+    report_page_faults(state, before, after);
     state.SetBytesProcessed(state.iterations() * n);
 }
 BENCHMARK(BM_SASearch_Repetitive)->Range(1 << 10, 1 << 24)->Unit(benchmark::kMicrosecond);
@@ -90,11 +119,14 @@ static void BM_SASearch_Natural(benchmark::State &state)
     std::string text = natural_corpus(n);
     auto pattern = setup_index(text, n);
     Matcher matcher(CORPUS_PATH, INDEX_PATH);
+    auto before = snapshot_rusage();
     for (auto _ : state)
     {
         auto results = matcher.search(pattern);
         benchmark::DoNotOptimize(results.data());
     }
+    auto after = snapshot_rusage();
+    report_page_faults(state, before, after);
     state.SetBytesProcessed(state.iterations() * n);
 }
 BENCHMARK(BM_SASearch_Natural)->Range(1 << 10, 1 << 24)->Unit(benchmark::kMicrosecond);
@@ -107,11 +139,14 @@ static void BM_NaiveSearch_Random(benchmark::State &state)
     std::string text = random_corpus(n);
     auto pattern = setup_corpus(text, n);
     NaiveMatcher matcher(CORPUS_PATH);
+    auto before = snapshot_rusage();
     for (auto _ : state)
     {
         auto results = matcher.search(pattern);
         benchmark::DoNotOptimize(results.data());
     }
+    auto after = snapshot_rusage();
+    report_page_faults(state, before, after);
     state.SetBytesProcessed(state.iterations() * n);
 }
 BENCHMARK(BM_NaiveSearch_Random)->Range(1 << 10, 1 << 24)->Unit(benchmark::kMicrosecond);
@@ -122,11 +157,14 @@ static void BM_NaiveSearch_Repetitive(benchmark::State &state)
     std::string text = repetitive_corpus(n);
     auto pattern = setup_corpus(text, n);
     NaiveMatcher matcher(CORPUS_PATH);
+    auto before = snapshot_rusage();
     for (auto _ : state)
     {
         auto results = matcher.search(pattern);
         benchmark::DoNotOptimize(results.data());
     }
+    auto after = snapshot_rusage();
+    report_page_faults(state, before, after);
     state.SetBytesProcessed(state.iterations() * n);
 }
 BENCHMARK(BM_NaiveSearch_Repetitive)->Range(1 << 10, 1 << 24)->Unit(benchmark::kMicrosecond);
@@ -137,11 +175,14 @@ static void BM_NaiveSearch_Natural(benchmark::State &state)
     std::string text = natural_corpus(n);
     auto pattern = setup_corpus(text, n);
     NaiveMatcher matcher(CORPUS_PATH);
+    auto before = snapshot_rusage();
     for (auto _ : state)
     {
         auto results = matcher.search(pattern);
         benchmark::DoNotOptimize(results.data());
     }
+    auto after = snapshot_rusage();
+    report_page_faults(state, before, after);
     state.SetBytesProcessed(state.iterations() * n);
 }
 BENCHMARK(BM_NaiveSearch_Natural)->Range(1 << 10, 1 << 24)->Unit(benchmark::kMicrosecond);
