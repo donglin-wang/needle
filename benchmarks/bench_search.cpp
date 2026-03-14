@@ -4,6 +4,8 @@
 #include "../src/naive_matcher.hpp"
 #include "../src/trie_indexer.hpp"
 #include "../src/trie_matcher.hpp"
+#include "../src/arena_trie_indexer.hpp"
+#include "../src/arena_trie_matcher.hpp"
 #include "../src/suffix_array_indexer.hpp"
 #include "corpus_generator.hpp"
 
@@ -29,9 +31,10 @@ static void report_page_faults(benchmark::State &state,
         benchmark::Counter::kAvgIterations);
 }
 
-static const std::string CORPUS_PATH     = "/tmp/needle_bench_corpus.bin";
-static const std::string INDEX_PATH      = "/tmp/needle_bench_index.bin";
-static const std::string TRIE_INDEX_PATH = "/tmp/needle_bench_trie_index.bin";
+static const std::string CORPUS_PATH           = "/tmp/needle_bench_corpus.bin";
+static const std::string INDEX_PATH            = "/tmp/needle_bench_index.bin";
+static const std::string TRIE_INDEX_PATH       = "/tmp/needle_bench_trie_index.bin";
+static const std::string ARENA_TRIE_INDEX_PATH = "/tmp/needle_bench_arena_trie_index.bin";
 
 static std::vector<int32_t> codepoints(const std::string &s)
 {
@@ -67,6 +70,15 @@ static std::vector<int32_t> setup_trie(const std::string &text, size_t n)
     auto text_codepoints = codepoints(text);
     TrieIndexer indexer(text_codepoints);
     indexer.save_index(TRIE_INDEX_PATH);
+    return mid_pattern(text, n);
+}
+
+// Helper: build arena trie index and save to disk, return pattern.
+static std::vector<int32_t> setup_arena_trie(const std::string &text, size_t n)
+{
+    auto text_codepoints = codepoints(text);
+    ArenaTrieIndexer indexer(text_codepoints);
+    indexer.save_index(ARENA_TRIE_INDEX_PATH);
     return mid_pattern(text, n);
 }
 
@@ -255,5 +267,62 @@ static void BM_TrieSearch_Natural(benchmark::State &state)
     state.SetBytesProcessed(state.iterations() * n);
 }
 BENCHMARK(BM_TrieSearch_Natural)->Range(1 << 10, 1 << 16)->Unit(benchmark::kMicrosecond);
+
+// --- Arena trie search: random, repetitive, natural ---
+// Same cap as naive trie — O(n^2) build.
+
+static void BM_ArenaTrieSearch_Random(benchmark::State &state)
+{
+    const size_t n = state.range(0);
+    std::string text = random_corpus(n);
+    auto pattern = setup_arena_trie(text, n);
+    ArenaTrieMatcher matcher(ARENA_TRIE_INDEX_PATH);
+    auto before = snapshot_rusage();
+    for (auto _ : state)
+    {
+        auto results = matcher.search(pattern);
+        benchmark::DoNotOptimize(results.data());
+    }
+    auto after = snapshot_rusage();
+    report_page_faults(state, before, after);
+    state.SetBytesProcessed(state.iterations() * n);
+}
+BENCHMARK(BM_ArenaTrieSearch_Random)->Range(1 << 10, 1 << 16)->Unit(benchmark::kMicrosecond);
+
+static void BM_ArenaTrieSearch_Repetitive(benchmark::State &state)
+{
+    const size_t n = state.range(0);
+    std::string text = repetitive_corpus(n);
+    auto pattern = setup_arena_trie(text, n);
+    ArenaTrieMatcher matcher(ARENA_TRIE_INDEX_PATH);
+    auto before = snapshot_rusage();
+    for (auto _ : state)
+    {
+        auto results = matcher.search(pattern);
+        benchmark::DoNotOptimize(results.data());
+    }
+    auto after = snapshot_rusage();
+    report_page_faults(state, before, after);
+    state.SetBytesProcessed(state.iterations() * n);
+}
+BENCHMARK(BM_ArenaTrieSearch_Repetitive)->Range(1 << 10, 1 << 16)->Unit(benchmark::kMicrosecond);
+
+static void BM_ArenaTrieSearch_Natural(benchmark::State &state)
+{
+    const size_t n = state.range(0);
+    std::string text = natural_corpus(n);
+    auto pattern = setup_arena_trie(text, n);
+    ArenaTrieMatcher matcher(ARENA_TRIE_INDEX_PATH);
+    auto before = snapshot_rusage();
+    for (auto _ : state)
+    {
+        auto results = matcher.search(pattern);
+        benchmark::DoNotOptimize(results.data());
+    }
+    auto after = snapshot_rusage();
+    report_page_faults(state, before, after);
+    state.SetBytesProcessed(state.iterations() * n);
+}
+BENCHMARK(BM_ArenaTrieSearch_Natural)->Range(1 << 10, 1 << 16)->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_MAIN();
