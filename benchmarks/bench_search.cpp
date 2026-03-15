@@ -2,16 +2,17 @@
 
 #include "../src/matcher.hpp"
 #include "../src/naive_matcher.hpp"
-#include "../src/trie_indexer.hpp"
-#include "../src/trie_matcher.hpp"
-#include "../src/arena_trie_indexer.hpp"
-#include "../src/arena_trie_matcher.hpp"
 #include "../src/interpolation_matcher.hpp"
 #include "../src/suffix_array_indexer.hpp"
+#include "../src/suffix_tree_indexer.hpp"
+#include "../src/suffix_tree_matcher.hpp"
 #include "corpus_generator.hpp"
 
+#include <chrono>
 #include <string>
 #include <sys/resource.h>
+
+using Clock = std::chrono::high_resolution_clock;
 
 static struct rusage snapshot_rusage()
 {
@@ -32,85 +33,125 @@ static void report_page_faults(benchmark::State &state,
         benchmark::Counter::kAvgIterations);
 }
 
+static double us_between(Clock::time_point a, Clock::time_point b)
+{
+    return std::chrono::duration<double, std::micro>(b - a).count();
+}
+
 static const std::string CORPUS_PATH           = "/tmp/needle_bench_corpus.bin";
 static const std::string INDEX_PATH            = "/tmp/needle_bench_index.bin";
-static const std::string TRIE_INDEX_PATH       = "/tmp/needle_bench_trie_index.bin";
-static const std::string ARENA_TRIE_INDEX_PATH = "/tmp/needle_bench_arena_trie_index.bin";
+static const std::string SUFFIX_TREE_INDEX_PATH = "/tmp/needle_bench_suffix_tree_index.bin";
 
 static std::vector<int32_t> codepoints(const std::string &s)
 {
     return {s.begin(), s.end()};
 }
 
-// Extracts an 8-char pattern from the middle of the corpus.
 static std::vector<int32_t> mid_pattern(const std::string &text, size_t n)
 {
     return codepoints(text.substr(n / 2, 8));
 }
 
-// Helper: build and save corpus + index, return pattern.
-static std::vector<int32_t> setup_index(const std::string &text, size_t n)
-{
-    auto text_codepoints = codepoints(text);
-    save_corpus(text_codepoints, CORPUS_PATH);
-    SuffixArrayIndexer indexer(std::move(text_codepoints));
-    indexer.save_index(INDEX_PATH);
-    return mid_pattern(text, n);
-}
+// ============================================================================
+// SA — build and search
+// Build: construct SA from codepoints + serialize (corpus + index) to disk.
+// Search: mmap + binary search (single combined duration — mmap is lazy).
+// ============================================================================
 
-// Helper: save corpus only, return pattern.
-static std::vector<int32_t> setup_corpus(const std::string &text, size_t n)
+static void BM_SABuild_Random(benchmark::State &state)
 {
-    save_corpus(codepoints(text), CORPUS_PATH);
-    return mid_pattern(text, n);
-}
-
-// Helper: build trie index and save to disk, return pattern.
-static std::vector<int32_t> setup_trie(const std::string &text, size_t n)
-{
-    auto text_codepoints = codepoints(text);
-    TrieIndexer indexer(text_codepoints);
-    indexer.save_index(TRIE_INDEX_PATH);
-    return mid_pattern(text, n);
-}
-
-// Helper: build arena trie index and save to disk, return pattern.
-static std::vector<int32_t> setup_arena_trie(const std::string &text, size_t n)
-{
-    auto text_codepoints = codepoints(text);
-    ArenaTrieIndexer indexer(text_codepoints);
-    indexer.save_index(ARENA_TRIE_INDEX_PATH);
-    return mid_pattern(text, n);
-}
-
-// --- Index build ---
-
-static void BM_IndexBuild(benchmark::State &state)
-{
-    std::string text = random_corpus(state.range(0));
+    const size_t n = state.range(0);
+    std::string text = random_corpus(n);
+    auto cp = codepoints(text);
+    double construct_us = 0, serialize_us = 0;
     auto before = snapshot_rusage();
     for (auto _ : state)
     {
-        SuffixArrayIndexer indexer(codepoints(text));
-        benchmark::DoNotOptimize(indexer.get_sa().data());
+        auto input = cp;
+        auto t0 = Clock::now();
+        SuffixArrayIndexer indexer(std::move(input));
+        auto t1 = Clock::now();
+        save_corpus(cp, CORPUS_PATH);
+        indexer.save_index(INDEX_PATH);
+        auto t2 = Clock::now();
+        construct_us += us_between(t0, t1);
+        serialize_us += us_between(t1, t2);
     }
     auto after = snapshot_rusage();
     report_page_faults(state, before, after);
-    state.SetBytesProcessed(state.iterations() * state.range(0));
+    state.counters["construct_us"] = benchmark::Counter(construct_us, benchmark::Counter::kAvgIterations);
+    state.counters["serialize_us"] = benchmark::Counter(serialize_us, benchmark::Counter::kAvgIterations);
+    state.SetBytesProcessed(state.iterations() * n);
 }
-BENCHMARK(BM_IndexBuild)->Range(1 << 10, 1 << 20)->Unit(benchmark::kMillisecond);
+BENCHMARK(BM_SABuild_Random)->Range(1 << 10, 1 << 26)->Unit(benchmark::kMillisecond);
 
-// --- SA search: random, repetitive, natural ---
+static void BM_SABuild_Repetitive(benchmark::State &state)
+{
+    const size_t n = state.range(0);
+    std::string text = repetitive_corpus(n);
+    auto cp = codepoints(text);
+    double construct_us = 0, serialize_us = 0;
+    auto before = snapshot_rusage();
+    for (auto _ : state)
+    {
+        auto input = cp;
+        auto t0 = Clock::now();
+        SuffixArrayIndexer indexer(std::move(input));
+        auto t1 = Clock::now();
+        save_corpus(cp, CORPUS_PATH);
+        indexer.save_index(INDEX_PATH);
+        auto t2 = Clock::now();
+        construct_us += us_between(t0, t1);
+        serialize_us += us_between(t1, t2);
+    }
+    auto after = snapshot_rusage();
+    report_page_faults(state, before, after);
+    state.counters["construct_us"] = benchmark::Counter(construct_us, benchmark::Counter::kAvgIterations);
+    state.counters["serialize_us"] = benchmark::Counter(serialize_us, benchmark::Counter::kAvgIterations);
+    state.SetBytesProcessed(state.iterations() * n);
+}
+BENCHMARK(BM_SABuild_Repetitive)->Range(1 << 10, 1 << 26)->Unit(benchmark::kMillisecond);
+
+static void BM_SABuild_Natural(benchmark::State &state)
+{
+    const size_t n = state.range(0);
+    std::string text = natural_corpus(n);
+    auto cp = codepoints(text);
+    double construct_us = 0, serialize_us = 0;
+    auto before = snapshot_rusage();
+    for (auto _ : state)
+    {
+        auto input = cp;
+        auto t0 = Clock::now();
+        SuffixArrayIndexer indexer(std::move(input));
+        auto t1 = Clock::now();
+        save_corpus(cp, CORPUS_PATH);
+        indexer.save_index(INDEX_PATH);
+        auto t2 = Clock::now();
+        construct_us += us_between(t0, t1);
+        serialize_us += us_between(t1, t2);
+    }
+    auto after = snapshot_rusage();
+    report_page_faults(state, before, after);
+    state.counters["construct_us"] = benchmark::Counter(construct_us, benchmark::Counter::kAvgIterations);
+    state.counters["serialize_us"] = benchmark::Counter(serialize_us, benchmark::Counter::kAvgIterations);
+    state.SetBytesProcessed(state.iterations() * n);
+}
+BENCHMARK(BM_SABuild_Natural)->Range(1 << 10, 1 << 26)->Unit(benchmark::kMillisecond);
 
 static void BM_SASearch_Random(benchmark::State &state)
 {
     const size_t n = state.range(0);
     std::string text = random_corpus(n);
-    auto pattern = setup_index(text, n);
-    Matcher matcher(CORPUS_PATH, INDEX_PATH);
+    auto cp = codepoints(text);
+    save_corpus(cp, CORPUS_PATH);
+    SuffixArrayIndexer indexer(std::move(cp));
+    indexer.save_index(INDEX_PATH);
+    auto pattern = mid_pattern(text, n);
     auto before = snapshot_rusage();
     for (auto _ : state)
     {
+        Matcher matcher(CORPUS_PATH, INDEX_PATH);
         auto results = matcher.search(pattern);
         benchmark::DoNotOptimize(results.data());
     }
@@ -118,17 +159,21 @@ static void BM_SASearch_Random(benchmark::State &state)
     report_page_faults(state, before, after);
     state.SetBytesProcessed(state.iterations() * n);
 }
-BENCHMARK(BM_SASearch_Random)->Range(1 << 10, 1 << 24)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_SASearch_Random)->Range(1 << 10, 1 << 26)->Unit(benchmark::kMicrosecond);
 
 static void BM_SASearch_Repetitive(benchmark::State &state)
 {
     const size_t n = state.range(0);
     std::string text = repetitive_corpus(n);
-    auto pattern = setup_index(text, n);
-    Matcher matcher(CORPUS_PATH, INDEX_PATH);
+    auto cp = codepoints(text);
+    save_corpus(cp, CORPUS_PATH);
+    SuffixArrayIndexer indexer(std::move(cp));
+    indexer.save_index(INDEX_PATH);
+    auto pattern = mid_pattern(text, n);
     auto before = snapshot_rusage();
     for (auto _ : state)
     {
+        Matcher matcher(CORPUS_PATH, INDEX_PATH);
         auto results = matcher.search(pattern);
         benchmark::DoNotOptimize(results.data());
     }
@@ -136,17 +181,21 @@ static void BM_SASearch_Repetitive(benchmark::State &state)
     report_page_faults(state, before, after);
     state.SetBytesProcessed(state.iterations() * n);
 }
-BENCHMARK(BM_SASearch_Repetitive)->Range(1 << 10, 1 << 24)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_SASearch_Repetitive)->Range(1 << 10, 1 << 26)->Unit(benchmark::kMicrosecond);
 
 static void BM_SASearch_Natural(benchmark::State &state)
 {
     const size_t n = state.range(0);
     std::string text = natural_corpus(n);
-    auto pattern = setup_index(text, n);
-    Matcher matcher(CORPUS_PATH, INDEX_PATH);
+    auto cp = codepoints(text);
+    save_corpus(cp, CORPUS_PATH);
+    SuffixArrayIndexer indexer(std::move(cp));
+    indexer.save_index(INDEX_PATH);
+    auto pattern = mid_pattern(text, n);
     auto before = snapshot_rusage();
     for (auto _ : state)
     {
+        Matcher matcher(CORPUS_PATH, INDEX_PATH);
         auto results = matcher.search(pattern);
         benchmark::DoNotOptimize(results.data());
     }
@@ -154,189 +203,282 @@ static void BM_SASearch_Natural(benchmark::State &state)
     report_page_faults(state, before, after);
     state.SetBytesProcessed(state.iterations() * n);
 }
-BENCHMARK(BM_SASearch_Natural)->Range(1 << 10, 1 << 24)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_SASearch_Natural)->Range(1 << 10, 1 << 26)->Unit(benchmark::kMicrosecond);
 
-// --- Naive search: random, repetitive, natural ---
+// ============================================================================
+// Naive — no index to build; search = load corpus from disk + linear scan.
+// Two sub-durations: load_us and search_us.
+// ============================================================================
 
 static void BM_NaiveSearch_Random(benchmark::State &state)
 {
     const size_t n = state.range(0);
     std::string text = random_corpus(n);
-    auto pattern = setup_corpus(text, n);
-    NaiveMatcher matcher(CORPUS_PATH);
+    save_corpus(codepoints(text), CORPUS_PATH);
+    auto pattern = mid_pattern(text, n);
+    double load_us = 0, search_us = 0;
     auto before = snapshot_rusage();
     for (auto _ : state)
     {
+        auto t0 = Clock::now();
+        NaiveMatcher matcher(CORPUS_PATH);
+        auto t1 = Clock::now();
         auto results = matcher.search(pattern);
+        auto t2 = Clock::now();
         benchmark::DoNotOptimize(results.data());
+        load_us += us_between(t0, t1);
+        search_us += us_between(t1, t2);
     }
     auto after = snapshot_rusage();
     report_page_faults(state, before, after);
+    state.counters["load_us"] = benchmark::Counter(load_us, benchmark::Counter::kAvgIterations);
+    state.counters["search_us"] = benchmark::Counter(search_us, benchmark::Counter::kAvgIterations);
     state.SetBytesProcessed(state.iterations() * n);
 }
-BENCHMARK(BM_NaiveSearch_Random)->Range(1 << 10, 1 << 24)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_NaiveSearch_Random)->Range(1 << 10, 1 << 26)->Unit(benchmark::kMicrosecond);
 
 static void BM_NaiveSearch_Repetitive(benchmark::State &state)
 {
     const size_t n = state.range(0);
     std::string text = repetitive_corpus(n);
-    auto pattern = setup_corpus(text, n);
-    NaiveMatcher matcher(CORPUS_PATH);
+    save_corpus(codepoints(text), CORPUS_PATH);
+    auto pattern = mid_pattern(text, n);
+    double load_us = 0, search_us = 0;
     auto before = snapshot_rusage();
     for (auto _ : state)
     {
+        auto t0 = Clock::now();
+        NaiveMatcher matcher(CORPUS_PATH);
+        auto t1 = Clock::now();
         auto results = matcher.search(pattern);
+        auto t2 = Clock::now();
         benchmark::DoNotOptimize(results.data());
+        load_us += us_between(t0, t1);
+        search_us += us_between(t1, t2);
     }
     auto after = snapshot_rusage();
     report_page_faults(state, before, after);
+    state.counters["load_us"] = benchmark::Counter(load_us, benchmark::Counter::kAvgIterations);
+    state.counters["search_us"] = benchmark::Counter(search_us, benchmark::Counter::kAvgIterations);
     state.SetBytesProcessed(state.iterations() * n);
 }
-BENCHMARK(BM_NaiveSearch_Repetitive)->Range(1 << 10, 1 << 24)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_NaiveSearch_Repetitive)->Range(1 << 10, 1 << 26)->Unit(benchmark::kMicrosecond);
 
 static void BM_NaiveSearch_Natural(benchmark::State &state)
 {
     const size_t n = state.range(0);
     std::string text = natural_corpus(n);
-    auto pattern = setup_corpus(text, n);
-    NaiveMatcher matcher(CORPUS_PATH);
+    save_corpus(codepoints(text), CORPUS_PATH);
+    auto pattern = mid_pattern(text, n);
+    double load_us = 0, search_us = 0;
     auto before = snapshot_rusage();
     for (auto _ : state)
     {
+        auto t0 = Clock::now();
+        NaiveMatcher matcher(CORPUS_PATH);
+        auto t1 = Clock::now();
         auto results = matcher.search(pattern);
+        auto t2 = Clock::now();
         benchmark::DoNotOptimize(results.data());
+        load_us += us_between(t0, t1);
+        search_us += us_between(t1, t2);
     }
     auto after = snapshot_rusage();
     report_page_faults(state, before, after);
+    state.counters["load_us"] = benchmark::Counter(load_us, benchmark::Counter::kAvgIterations);
+    state.counters["search_us"] = benchmark::Counter(search_us, benchmark::Counter::kAvgIterations);
     state.SetBytesProcessed(state.iterations() * n);
 }
-BENCHMARK(BM_NaiveSearch_Natural)->Range(1 << 10, 1 << 24)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_NaiveSearch_Natural)->Range(1 << 10, 1 << 26)->Unit(benchmark::kMicrosecond);
 
-// --- Trie search: random, repetitive, natural ---
-// All capped at 8KB — O(n^2) build dominates setup time regardless of corpus type.
+// ============================================================================
+// Suffix Tree — Ukkonen's O(n) construction, mmap search.
+// Build: construct suffix tree + serialize flat arrays to disk.
+// Search: mmap + compressed edge traversal. Two sub-durations.
+// O(n) build allows full range (1KB–16MB).
+// ============================================================================
 
-static void BM_TrieSearch_Random(benchmark::State &state)
+static void BM_SuffixTreeBuild_Random(benchmark::State &state)
 {
     const size_t n = state.range(0);
     std::string text = random_corpus(n);
-    auto pattern = setup_trie(text, n);
-    TrieMatcher matcher(TRIE_INDEX_PATH);
+    auto cp = codepoints(text);
+    double construct_us = 0, serialize_us = 0;
     auto before = snapshot_rusage();
     for (auto _ : state)
     {
-        auto results = matcher.search(pattern);
-        benchmark::DoNotOptimize(results.data());
+        auto t0 = Clock::now();
+        SuffixTreeIndexer indexer(cp);
+        auto t1 = Clock::now();
+        indexer.save_index(SUFFIX_TREE_INDEX_PATH);
+        auto t2 = Clock::now();
+        construct_us += us_between(t0, t1);
+        serialize_us += us_between(t1, t2);
     }
     auto after = snapshot_rusage();
     report_page_faults(state, before, after);
+    state.counters["construct_us"] = benchmark::Counter(construct_us, benchmark::Counter::kAvgIterations);
+    state.counters["serialize_us"] = benchmark::Counter(serialize_us, benchmark::Counter::kAvgIterations);
     state.SetBytesProcessed(state.iterations() * n);
 }
-BENCHMARK(BM_TrieSearch_Random)->Range(1 << 10, 1 << 13)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_SuffixTreeBuild_Random)->Range(1 << 10, 1 << 26)->Unit(benchmark::kMillisecond);
 
-static void BM_TrieSearch_Repetitive(benchmark::State &state)
+static void BM_SuffixTreeBuild_Repetitive(benchmark::State &state)
 {
     const size_t n = state.range(0);
     std::string text = repetitive_corpus(n);
-    auto pattern = setup_trie(text, n);
-    TrieMatcher matcher(TRIE_INDEX_PATH);
+    auto cp = codepoints(text);
+    double construct_us = 0, serialize_us = 0;
     auto before = snapshot_rusage();
     for (auto _ : state)
     {
-        auto results = matcher.search(pattern);
-        benchmark::DoNotOptimize(results.data());
+        auto t0 = Clock::now();
+        SuffixTreeIndexer indexer(cp);
+        auto t1 = Clock::now();
+        indexer.save_index(SUFFIX_TREE_INDEX_PATH);
+        auto t2 = Clock::now();
+        construct_us += us_between(t0, t1);
+        serialize_us += us_between(t1, t2);
     }
     auto after = snapshot_rusage();
     report_page_faults(state, before, after);
+    state.counters["construct_us"] = benchmark::Counter(construct_us, benchmark::Counter::kAvgIterations);
+    state.counters["serialize_us"] = benchmark::Counter(serialize_us, benchmark::Counter::kAvgIterations);
     state.SetBytesProcessed(state.iterations() * n);
 }
-BENCHMARK(BM_TrieSearch_Repetitive)->Range(1 << 10, 1 << 13)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_SuffixTreeBuild_Repetitive)->Range(1 << 10, 1 << 26)->Unit(benchmark::kMillisecond);
 
-static void BM_TrieSearch_Natural(benchmark::State &state)
+static void BM_SuffixTreeBuild_Natural(benchmark::State &state)
 {
     const size_t n = state.range(0);
     std::string text = natural_corpus(n);
-    auto pattern = setup_trie(text, n);
-    TrieMatcher matcher(TRIE_INDEX_PATH);
+    auto cp = codepoints(text);
+    double construct_us = 0, serialize_us = 0;
     auto before = snapshot_rusage();
     for (auto _ : state)
     {
-        auto results = matcher.search(pattern);
-        benchmark::DoNotOptimize(results.data());
+        auto t0 = Clock::now();
+        SuffixTreeIndexer indexer(cp);
+        auto t1 = Clock::now();
+        indexer.save_index(SUFFIX_TREE_INDEX_PATH);
+        auto t2 = Clock::now();
+        construct_us += us_between(t0, t1);
+        serialize_us += us_between(t1, t2);
     }
     auto after = snapshot_rusage();
     report_page_faults(state, before, after);
+    state.counters["construct_us"] = benchmark::Counter(construct_us, benchmark::Counter::kAvgIterations);
+    state.counters["serialize_us"] = benchmark::Counter(serialize_us, benchmark::Counter::kAvgIterations);
     state.SetBytesProcessed(state.iterations() * n);
 }
-BENCHMARK(BM_TrieSearch_Natural)->Range(1 << 10, 1 << 13)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_SuffixTreeBuild_Natural)->Range(1 << 10, 1 << 26)->Unit(benchmark::kMillisecond);
 
-// --- Arena trie search: random, repetitive, natural ---
-// Same caps as naive trie.
-
-static void BM_ArenaTrieSearch_Random(benchmark::State &state)
+static void BM_SuffixTreeSearch_Random(benchmark::State &state)
 {
     const size_t n = state.range(0);
     std::string text = random_corpus(n);
-    auto pattern = setup_arena_trie(text, n);
-    ArenaTrieMatcher matcher(ARENA_TRIE_INDEX_PATH);
+    auto cp = codepoints(text);
+    SuffixTreeIndexer indexer(cp);
+    indexer.save_index(SUFFIX_TREE_INDEX_PATH);
+    auto pattern = mid_pattern(text, n);
+    double load_us = 0, search_us = 0;
     auto before = snapshot_rusage();
     for (auto _ : state)
     {
+        auto t0 = Clock::now();
+        SuffixTreeMatcher matcher(SUFFIX_TREE_INDEX_PATH);
+        auto t1 = Clock::now();
         auto results = matcher.search(pattern);
+        auto t2 = Clock::now();
         benchmark::DoNotOptimize(results.data());
+        load_us += us_between(t0, t1);
+        search_us += us_between(t1, t2);
     }
     auto after = snapshot_rusage();
     report_page_faults(state, before, after);
+    state.counters["load_us"] = benchmark::Counter(load_us, benchmark::Counter::kAvgIterations);
+    state.counters["search_us"] = benchmark::Counter(search_us, benchmark::Counter::kAvgIterations);
     state.SetBytesProcessed(state.iterations() * n);
 }
-BENCHMARK(BM_ArenaTrieSearch_Random)->Range(1 << 10, 1 << 13)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_SuffixTreeSearch_Random)->Range(1 << 10, 1 << 26)->Unit(benchmark::kMicrosecond);
 
-static void BM_ArenaTrieSearch_Repetitive(benchmark::State &state)
+static void BM_SuffixTreeSearch_Repetitive(benchmark::State &state)
 {
     const size_t n = state.range(0);
     std::string text = repetitive_corpus(n);
-    auto pattern = setup_arena_trie(text, n);
-    ArenaTrieMatcher matcher(ARENA_TRIE_INDEX_PATH);
+    auto cp = codepoints(text);
+    SuffixTreeIndexer indexer(cp);
+    indexer.save_index(SUFFIX_TREE_INDEX_PATH);
+    auto pattern = mid_pattern(text, n);
+    double load_us = 0, search_us = 0;
     auto before = snapshot_rusage();
     for (auto _ : state)
     {
+        auto t0 = Clock::now();
+        SuffixTreeMatcher matcher(SUFFIX_TREE_INDEX_PATH);
+        auto t1 = Clock::now();
         auto results = matcher.search(pattern);
+        auto t2 = Clock::now();
         benchmark::DoNotOptimize(results.data());
+        load_us += us_between(t0, t1);
+        search_us += us_between(t1, t2);
     }
     auto after = snapshot_rusage();
     report_page_faults(state, before, after);
+    state.counters["load_us"] = benchmark::Counter(load_us, benchmark::Counter::kAvgIterations);
+    state.counters["search_us"] = benchmark::Counter(search_us, benchmark::Counter::kAvgIterations);
     state.SetBytesProcessed(state.iterations() * n);
 }
-BENCHMARK(BM_ArenaTrieSearch_Repetitive)->Range(1 << 10, 1 << 13)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_SuffixTreeSearch_Repetitive)->Range(1 << 10, 1 << 26)->Unit(benchmark::kMicrosecond);
 
-static void BM_ArenaTrieSearch_Natural(benchmark::State &state)
+static void BM_SuffixTreeSearch_Natural(benchmark::State &state)
 {
     const size_t n = state.range(0);
     std::string text = natural_corpus(n);
-    auto pattern = setup_arena_trie(text, n);
-    ArenaTrieMatcher matcher(ARENA_TRIE_INDEX_PATH);
+    auto cp = codepoints(text);
+    SuffixTreeIndexer indexer(cp);
+    indexer.save_index(SUFFIX_TREE_INDEX_PATH);
+    auto pattern = mid_pattern(text, n);
+    double load_us = 0, search_us = 0;
     auto before = snapshot_rusage();
     for (auto _ : state)
     {
+        auto t0 = Clock::now();
+        SuffixTreeMatcher matcher(SUFFIX_TREE_INDEX_PATH);
+        auto t1 = Clock::now();
         auto results = matcher.search(pattern);
+        auto t2 = Clock::now();
         benchmark::DoNotOptimize(results.data());
+        load_us += us_between(t0, t1);
+        search_us += us_between(t1, t2);
     }
     auto after = snapshot_rusage();
     report_page_faults(state, before, after);
+    state.counters["load_us"] = benchmark::Counter(load_us, benchmark::Counter::kAvgIterations);
+    state.counters["search_us"] = benchmark::Counter(search_us, benchmark::Counter::kAvgIterations);
     state.SetBytesProcessed(state.iterations() * n);
 }
-BENCHMARK(BM_ArenaTrieSearch_Natural)->Range(1 << 10, 1 << 13)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_SuffixTreeSearch_Natural)->Range(1 << 10, 1 << 26)->Unit(benchmark::kMicrosecond);
 
-// --- Interpolation search on SA: random, repetitive, natural ---
+// ============================================================================
+// Interpolation — uses same SA index as Matcher.
+// Build: same as SA (not duplicated — filter with BM_SABuild).
+// Search: mmap + interpolation search (single combined duration).
+// ============================================================================
 
 static void BM_InterpolationSearch_Random(benchmark::State &state)
 {
     const size_t n = state.range(0);
     std::string text = random_corpus(n);
-    auto pattern = setup_index(text, n);
-    InterpolationMatcher matcher(CORPUS_PATH, INDEX_PATH);
+    auto cp = codepoints(text);
+    save_corpus(cp, CORPUS_PATH);
+    SuffixArrayIndexer indexer(std::move(cp));
+    indexer.save_index(INDEX_PATH);
+    auto pattern = mid_pattern(text, n);
     auto before = snapshot_rusage();
     for (auto _ : state)
     {
+        InterpolationMatcher matcher(CORPUS_PATH, INDEX_PATH);
         auto results = matcher.search(pattern);
         benchmark::DoNotOptimize(results.data());
     }
@@ -344,17 +486,21 @@ static void BM_InterpolationSearch_Random(benchmark::State &state)
     report_page_faults(state, before, after);
     state.SetBytesProcessed(state.iterations() * n);
 }
-BENCHMARK(BM_InterpolationSearch_Random)->Range(1 << 10, 1 << 24)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_InterpolationSearch_Random)->Range(1 << 10, 1 << 26)->Unit(benchmark::kMicrosecond);
 
 static void BM_InterpolationSearch_Repetitive(benchmark::State &state)
 {
     const size_t n = state.range(0);
     std::string text = repetitive_corpus(n);
-    auto pattern = setup_index(text, n);
-    InterpolationMatcher matcher(CORPUS_PATH, INDEX_PATH);
+    auto cp = codepoints(text);
+    save_corpus(cp, CORPUS_PATH);
+    SuffixArrayIndexer indexer(std::move(cp));
+    indexer.save_index(INDEX_PATH);
+    auto pattern = mid_pattern(text, n);
     auto before = snapshot_rusage();
     for (auto _ : state)
     {
+        InterpolationMatcher matcher(CORPUS_PATH, INDEX_PATH);
         auto results = matcher.search(pattern);
         benchmark::DoNotOptimize(results.data());
     }
@@ -362,17 +508,21 @@ static void BM_InterpolationSearch_Repetitive(benchmark::State &state)
     report_page_faults(state, before, after);
     state.SetBytesProcessed(state.iterations() * n);
 }
-BENCHMARK(BM_InterpolationSearch_Repetitive)->Range(1 << 10, 1 << 24)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_InterpolationSearch_Repetitive)->Range(1 << 10, 1 << 26)->Unit(benchmark::kMicrosecond);
 
 static void BM_InterpolationSearch_Natural(benchmark::State &state)
 {
     const size_t n = state.range(0);
     std::string text = natural_corpus(n);
-    auto pattern = setup_index(text, n);
-    InterpolationMatcher matcher(CORPUS_PATH, INDEX_PATH);
+    auto cp = codepoints(text);
+    save_corpus(cp, CORPUS_PATH);
+    SuffixArrayIndexer indexer(std::move(cp));
+    indexer.save_index(INDEX_PATH);
+    auto pattern = mid_pattern(text, n);
     auto before = snapshot_rusage();
     for (auto _ : state)
     {
+        InterpolationMatcher matcher(CORPUS_PATH, INDEX_PATH);
         auto results = matcher.search(pattern);
         benchmark::DoNotOptimize(results.data());
     }
@@ -380,6 +530,6 @@ static void BM_InterpolationSearch_Natural(benchmark::State &state)
     report_page_faults(state, before, after);
     state.SetBytesProcessed(state.iterations() * n);
 }
-BENCHMARK(BM_InterpolationSearch_Natural)->Range(1 << 10, 1 << 24)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_InterpolationSearch_Natural)->Range(1 << 10, 1 << 26)->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_MAIN();
