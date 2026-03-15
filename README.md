@@ -51,11 +51,13 @@ make bench
 ## CLI
 
 ```bash
-# Index a UTF-8 text file
-needle index corpus.txt corpus.bin index.bin
+# Suffix array
+needle index    corpus.txt corpus.bin index.bin
+needle search   corpus.bin index.bin "pattern"
 
-# Search the index
-needle search corpus.bin index.bin "pattern"
+# Suffix tree
+needle index-st corpus.txt index.bin
+needle search-st index.bin "pattern"
 ```
 
 ## Structure
