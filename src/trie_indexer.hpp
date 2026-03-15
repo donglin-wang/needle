@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <fstream>
 #include <memory>
+#include <stack>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -54,19 +55,45 @@ private:
         }
     }
 
-    static void write_node(std::ofstream &file, const Node &node)
+    // Iterative pre-order serialization to avoid stack overflow on deep tries.
+    static void write_node(std::ofstream &file, const Node &root)
     {
-        int32_t num_children = static_cast<int32_t>(node.children.size());
-        int32_t num_positions = static_cast<int32_t>(node.positions.size());
-        file.write(reinterpret_cast<const char *>(&num_children), sizeof(num_children));
-        file.write(reinterpret_cast<const char *>(&num_positions), sizeof(num_positions));
-        if (num_positions > 0)
-            file.write(reinterpret_cast<const char *>(node.positions.data()),
-                       num_positions * sizeof(int32_t));
-        for (const auto &[key, child] : node.children)
+        struct Frame
         {
-            file.write(reinterpret_cast<const char *>(&key), sizeof(key));
-            write_node(file, *child);
+            const Node *node;
+            std::unordered_map<int32_t, std::unique_ptr<Node>>::const_iterator it;
+            bool header_written;
+        };
+
+        std::stack<Frame> stack;
+        stack.push({&root, root.children.cbegin(), false});
+
+        while (!stack.empty())
+        {
+            auto &frame = stack.top();
+            if (!frame.header_written)
+            {
+                int32_t num_children = static_cast<int32_t>(frame.node->children.size());
+                int32_t num_positions = static_cast<int32_t>(frame.node->positions.size());
+                file.write(reinterpret_cast<const char *>(&num_children), sizeof(num_children));
+                file.write(reinterpret_cast<const char *>(&num_positions), sizeof(num_positions));
+                if (num_positions > 0)
+                    file.write(reinterpret_cast<const char *>(frame.node->positions.data()),
+                               num_positions * sizeof(int32_t));
+                frame.header_written = true;
+            }
+
+            if (frame.it != frame.node->children.cend())
+            {
+                const auto &[key, child] = *frame.it;
+                file.write(reinterpret_cast<const char *>(&key), sizeof(key));
+                ++frame.it;
+                stack.push({child.get(), child->children.cbegin(), false});
+            }
+            else
+            {
+                stack.pop();
+            }
         }
     }
 };

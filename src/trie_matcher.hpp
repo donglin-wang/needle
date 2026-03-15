@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <fstream>
 #include <memory>
+#include <stack>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -48,28 +49,59 @@ public:
     }
 
 private:
+    // Iterative pre-order deserialization to avoid stack overflow on deep tries.
     static std::unique_ptr<Node> read_node(std::ifstream &file)
     {
-        auto node = std::make_unique<Node>();
+        struct Frame
+        {
+            Node *node;
+            int32_t remaining_children;
+        };
 
+        auto root = std::make_unique<Node>();
+
+        std::stack<Frame> stack;
+
+        // Read root header.
         int32_t num_children, num_positions;
         file.read(reinterpret_cast<char *>(&num_children), sizeof(num_children));
         file.read(reinterpret_cast<char *>(&num_positions), sizeof(num_positions));
-
         if (num_positions > 0)
         {
-            node->positions.resize(num_positions);
-            file.read(reinterpret_cast<char *>(node->positions.data()),
+            root->positions.resize(num_positions);
+            file.read(reinterpret_cast<char *>(root->positions.data()),
                       num_positions * sizeof(int32_t));
         }
+        stack.push({root.get(), num_children});
 
-        for (int32_t i = 0; i < num_children; i++)
+        while (!stack.empty())
         {
+            auto &frame = stack.top();
+            if (frame.remaining_children <= 0)
+            {
+                stack.pop();
+                continue;
+            }
+
             int32_t key;
             file.read(reinterpret_cast<char *>(&key), sizeof(key));
-            node->children[key] = read_node(file);
+            frame.remaining_children--;
+
+            auto child = std::make_unique<Node>();
+            file.read(reinterpret_cast<char *>(&num_children), sizeof(num_children));
+            file.read(reinterpret_cast<char *>(&num_positions), sizeof(num_positions));
+            if (num_positions > 0)
+            {
+                child->positions.resize(num_positions);
+                file.read(reinterpret_cast<char *>(child->positions.data()),
+                          num_positions * sizeof(int32_t));
+            }
+
+            Node *child_ptr = child.get();
+            frame.node->children[key] = std::move(child);
+            stack.push({child_ptr, num_children});
         }
 
-        return node;
+        return root;
     }
 };

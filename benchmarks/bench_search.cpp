@@ -6,6 +6,7 @@
 #include "../src/trie_matcher.hpp"
 #include "../src/arena_trie_indexer.hpp"
 #include "../src/arena_trie_matcher.hpp"
+#include "../src/interpolation_matcher.hpp"
 #include "../src/suffix_array_indexer.hpp"
 #include "corpus_generator.hpp"
 
@@ -212,7 +213,7 @@ static void BM_NaiveSearch_Natural(benchmark::State &state)
 BENCHMARK(BM_NaiveSearch_Natural)->Range(1 << 10, 1 << 24)->Unit(benchmark::kMicrosecond);
 
 // --- Trie search: random, repetitive, natural ---
-// Capped at 64KB — O(n^2) build makes larger sizes impractical.
+// All capped at 8KB — O(n^2) build dominates setup time regardless of corpus type.
 
 static void BM_TrieSearch_Random(benchmark::State &state)
 {
@@ -230,7 +231,7 @@ static void BM_TrieSearch_Random(benchmark::State &state)
     report_page_faults(state, before, after);
     state.SetBytesProcessed(state.iterations() * n);
 }
-BENCHMARK(BM_TrieSearch_Random)->Range(1 << 10, 1 << 16)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_TrieSearch_Random)->Range(1 << 10, 1 << 13)->Unit(benchmark::kMicrosecond);
 
 static void BM_TrieSearch_Repetitive(benchmark::State &state)
 {
@@ -248,7 +249,7 @@ static void BM_TrieSearch_Repetitive(benchmark::State &state)
     report_page_faults(state, before, after);
     state.SetBytesProcessed(state.iterations() * n);
 }
-BENCHMARK(BM_TrieSearch_Repetitive)->Range(1 << 10, 1 << 16)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_TrieSearch_Repetitive)->Range(1 << 10, 1 << 13)->Unit(benchmark::kMicrosecond);
 
 static void BM_TrieSearch_Natural(benchmark::State &state)
 {
@@ -266,10 +267,10 @@ static void BM_TrieSearch_Natural(benchmark::State &state)
     report_page_faults(state, before, after);
     state.SetBytesProcessed(state.iterations() * n);
 }
-BENCHMARK(BM_TrieSearch_Natural)->Range(1 << 10, 1 << 16)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_TrieSearch_Natural)->Range(1 << 10, 1 << 13)->Unit(benchmark::kMicrosecond);
 
 // --- Arena trie search: random, repetitive, natural ---
-// Same cap as naive trie — O(n^2) build.
+// Same caps as naive trie.
 
 static void BM_ArenaTrieSearch_Random(benchmark::State &state)
 {
@@ -287,7 +288,7 @@ static void BM_ArenaTrieSearch_Random(benchmark::State &state)
     report_page_faults(state, before, after);
     state.SetBytesProcessed(state.iterations() * n);
 }
-BENCHMARK(BM_ArenaTrieSearch_Random)->Range(1 << 10, 1 << 16)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_ArenaTrieSearch_Random)->Range(1 << 10, 1 << 13)->Unit(benchmark::kMicrosecond);
 
 static void BM_ArenaTrieSearch_Repetitive(benchmark::State &state)
 {
@@ -305,7 +306,7 @@ static void BM_ArenaTrieSearch_Repetitive(benchmark::State &state)
     report_page_faults(state, before, after);
     state.SetBytesProcessed(state.iterations() * n);
 }
-BENCHMARK(BM_ArenaTrieSearch_Repetitive)->Range(1 << 10, 1 << 16)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_ArenaTrieSearch_Repetitive)->Range(1 << 10, 1 << 13)->Unit(benchmark::kMicrosecond);
 
 static void BM_ArenaTrieSearch_Natural(benchmark::State &state)
 {
@@ -323,6 +324,62 @@ static void BM_ArenaTrieSearch_Natural(benchmark::State &state)
     report_page_faults(state, before, after);
     state.SetBytesProcessed(state.iterations() * n);
 }
-BENCHMARK(BM_ArenaTrieSearch_Natural)->Range(1 << 10, 1 << 16)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_ArenaTrieSearch_Natural)->Range(1 << 10, 1 << 13)->Unit(benchmark::kMicrosecond);
+
+// --- Interpolation search on SA: random, repetitive, natural ---
+
+static void BM_InterpolationSearch_Random(benchmark::State &state)
+{
+    const size_t n = state.range(0);
+    std::string text = random_corpus(n);
+    auto pattern = setup_index(text, n);
+    InterpolationMatcher matcher(CORPUS_PATH, INDEX_PATH);
+    auto before = snapshot_rusage();
+    for (auto _ : state)
+    {
+        auto results = matcher.search(pattern);
+        benchmark::DoNotOptimize(results.data());
+    }
+    auto after = snapshot_rusage();
+    report_page_faults(state, before, after);
+    state.SetBytesProcessed(state.iterations() * n);
+}
+BENCHMARK(BM_InterpolationSearch_Random)->Range(1 << 10, 1 << 24)->Unit(benchmark::kMicrosecond);
+
+static void BM_InterpolationSearch_Repetitive(benchmark::State &state)
+{
+    const size_t n = state.range(0);
+    std::string text = repetitive_corpus(n);
+    auto pattern = setup_index(text, n);
+    InterpolationMatcher matcher(CORPUS_PATH, INDEX_PATH);
+    auto before = snapshot_rusage();
+    for (auto _ : state)
+    {
+        auto results = matcher.search(pattern);
+        benchmark::DoNotOptimize(results.data());
+    }
+    auto after = snapshot_rusage();
+    report_page_faults(state, before, after);
+    state.SetBytesProcessed(state.iterations() * n);
+}
+BENCHMARK(BM_InterpolationSearch_Repetitive)->Range(1 << 10, 1 << 24)->Unit(benchmark::kMicrosecond);
+
+static void BM_InterpolationSearch_Natural(benchmark::State &state)
+{
+    const size_t n = state.range(0);
+    std::string text = natural_corpus(n);
+    auto pattern = setup_index(text, n);
+    InterpolationMatcher matcher(CORPUS_PATH, INDEX_PATH);
+    auto before = snapshot_rusage();
+    for (auto _ : state)
+    {
+        auto results = matcher.search(pattern);
+        benchmark::DoNotOptimize(results.data());
+    }
+    auto after = snapshot_rusage();
+    report_page_faults(state, before, after);
+    state.SetBytesProcessed(state.iterations() * n);
+}
+BENCHMARK(BM_InterpolationSearch_Natural)->Range(1 << 10, 1 << 24)->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_MAIN();
